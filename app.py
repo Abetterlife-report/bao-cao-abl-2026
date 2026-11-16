@@ -22,13 +22,6 @@ missing_pkgs = [
 if missing_pkgs:
     subprocess.check_call([sys.executable, "-m", "pip", "install", *missing_pkgs])
 
-# Tự động khởi chạy Streamlit khi bấm nút Play trên VS Code hoặc mở trực tiếp file .py
-if __name__ == "__main__" and os.environ.get("STREAMLIT_RUNNING") != "1":
-    env = os.environ.copy()
-    env["STREAMLIT_RUNNING"] = "1"
-    subprocess.run([sys.executable, "-m", "streamlit", "run", os.path.abspath(__file__)], env=env)
-    sys.exit()
-
 import io
 import re
 import glob
