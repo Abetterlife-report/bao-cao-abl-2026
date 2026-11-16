@@ -3,6 +3,7 @@ pandas
 plotly
 sqlalchemy
 psycopg2-binary
+psycopg[binary]
 openpyxl
 python-pptx
 numpy
