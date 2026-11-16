@@ -6,3 +6,5 @@ psycopg2-binary
 openpyxl
 python-pptx
 numpy
+xlsxwriter
+matplotlib
