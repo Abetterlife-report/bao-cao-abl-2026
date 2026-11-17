@@ -25,7 +25,7 @@ except ImportError:
     HAS_PPTX = False
 
 # 1. Cấu hình trang
-st.set_page_config(page_title="Báo Cáo Bán Hàng ABL 2026 (v18 - Đồng nhất màu)", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Báo Cáo Bán Hàng ABL 2026 (v19 - Hỗ trợ Brand)", page_icon="📊", layout="wide")
 st.title("📊 Dashboard Phân Tích Bán Hàng & Cơ Cấu Nhóm Hàng - ABL")
 
 # 2. Khóa mật khẩu đăng nhập nội bộ
@@ -51,7 +51,7 @@ MASTER_PALETTE = [
 ]
 
 def build_fixed_color_map(df_full):
-    """Tạo từ điển màu cố định cho tất cả Nhóm 2, Nhóm 1 và SKU từ dữ liệu gốc"""
+    """Tạo từ điển màu cố định cho tất cả Nhóm 2, Nhóm 1, Brand và SKU từ dữ liệu gốc"""
     color_map = {}
 
     # 1. Cố định màu cho Nhóm 2
@@ -74,7 +74,13 @@ def build_fixed_color_map(df_full):
             u_name = f"{row['Nhóm1']} ({str(row['Nhóm2'])[:1]})"
             color_map[u_name] = color_map.get(row["Nhóm1"], "#1F77B4")
 
-    # 3. Cố định màu cho SKU (dùng hash MD5 để mỗi mã hàng luôn ra 1 màu duy nhất)
+    # 3. Cố định màu cho Brand (dùng hash MD5 để mỗi Brand luôn ra 1 màu cố định)
+    if "Brand" in df_full.columns:
+        for br in df_full["Brand"].dropna().unique():
+            h = int(hashlib.md5(str(br).encode("utf-8")).hexdigest(), 16)
+            color_map[br] = MASTER_PALETTE[h % len(MASTER_PALETTE)]
+
+    # 4. Cố định màu cho SKU (dùng hash MD5 để mỗi mã hàng luôn ra 1 màu duy nhất)
     if "SKU_Label" in df_full.columns:
         for sku in df_full["SKU_Label"].dropna().unique():
             h = int(hashlib.md5(str(sku).encode("utf-8")).hexdigest(), 16)
@@ -156,6 +162,12 @@ def load_sql_data():
     engine = create_engine(st.secrets["DATABASE_URL"])
     df_sql = pd.read_sql("SELECT * FROM ban_hang_abl", engine)
     df_sql["Ngày_dt"] = pd.to_datetime(df_sql["Ngày_dt"], errors="coerce")
+    # Chuẩn hóa cột Brand (đảm bảo không bị lỗi nếu database cũ chưa có cột Brand hoặc có giá trị trống)
+    if "Brand" not in df_sql.columns:
+        df_sql["Brand"] = "(Chưa phân Brand)"
+    else:
+        df_sql["Brand"] = df_sql["Brand"].fillna("(Chưa phân Brand)").astype(str).str.strip()
+        df_sql.loc[df_sql["Brand"].isin(["", "nan", "None", "0"]), "Brand"] = "(Chưa phân Brand)"
     return df_sql
 
 df_all_sql = load_sql_data()
@@ -234,15 +246,23 @@ selected_nhom1 = st.sidebar.multiselect(
     options=available_nhom1,
     default=available_nhom1
 )
+df_after_n1 = df_after_n2[df_after_n2["Nhóm1"].isin(selected_nhom1)]
 
-units = sorted(df_after_n2["Đơn vị tính"].unique().tolist())
+available_brands = sorted(df_after_n1["Brand"].unique().tolist())
+selected_brands = st.sidebar.multiselect(
+    "🏷️ Brand (Thương hiệu):",
+    options=available_brands,
+    default=available_brands
+)
+
+units = sorted(df_after_n1["Đơn vị tính"].unique().tolist())
 selected_units = st.sidebar.multiselect("Đơn vị tính:", options=units, default=units)
-keyword = st.sidebar.text_input("Tìm tên hàng / mã hàng / mã đơn:", "")
+keyword = st.sidebar.text_input("Tìm tên hàng / mã hàng / mã đơn / Brand:", "")
 top_n = st.sidebar.slider("Số lượng Top hiển thị:", min_value=5, max_value=30, value=10, step=5)
 
-df_filtered = df_after_n2[
-    df_after_n2["Nhóm1"].isin(selected_nhom1) &
-    df_after_n2["Đơn vị tính"].isin(selected_units)
+df_filtered = df_after_n1[
+    df_after_n1["Brand"].isin(selected_brands) &
+    df_after_n1["Đơn vị tính"].isin(selected_units)
 ].copy()
 
 if keyword.strip():
@@ -250,7 +270,8 @@ if keyword.strip():
     df_filtered = df_filtered[
         df_filtered["Tên hàng hóa"].str.contains(kw, case=False, na=False) |
         df_filtered["Mã hàng hóa"].str.contains(kw, case=False, na=False) |
-        df_filtered["Mã đơn hàng eShop"].str.contains(kw, case=False, na=False)
+        df_filtered["Mã đơn hàng eShop"].str.contains(kw, case=False, na=False) |
+        df_filtered["Brand"].str.contains(kw, case=False, na=False)
     ]
 
 if df_filtered.empty:
@@ -281,7 +302,7 @@ df_daily = (
 df_daily["So_don"] = df_daily["So_don"].astype(int)
 df_daily["So_dong"] = df_daily["So_dong"].astype(int)
 
-df_prod = df_filtered.groupby(["Nhóm2", "Nhóm1", "Mã hàng hóa", "Tên hàng hóa", "Đơn vị tính"], as_index=False).agg(
+df_prod = df_filtered.groupby(["Nhóm2", "Nhóm1", "Brand", "Mã hàng hóa", "Tên hàng hóa", "Đơn vị tính"], as_index=False).agg(
     So_luong=("Số lượng", "sum"),
     Doanh_thu=("Doanh thu", "sum"),
     Gia_von=("Giá xuất kho", "sum"),
@@ -302,385 +323,781 @@ k5.metric("📦 Tổng SL bán ra", f"{total_qty:,.2f}")
 
 st.markdown("---")
 
-# --- PHẦN 2: 7 TAB NGHIỆP VỤ ---
-tab_grp, tab_n1_sku, tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🗂️ Phân tích nhóm hàng (N2 → N1)",
-    "📦 Phân tích nhóm hàng (N1 → SKU)",
-    "📅 Xu hướng theo Ngày",
-    "📈 Biến động từng SKU",
-    "🏆 Top Sản Phẩm",
-    "⚠️ Cảnh báo Lỗ & Giá vốn",
-    "📋 Sổ Chi Tiết"
-])
+# --- PHẦN 2: CHỌN CHẾ ĐỘ XEM DASHBOARD (NHÓM HÀNG HOẶC BRAND) ---
+view_mode = st.radio(
+    "🧭 Chế độ phân tích cấu trúc danh mục:",
+    [
+        "🗂️ Phân tích theo Nhóm Hàng (N2 → N1 → SKU)",
+        "🏷️ Phân tích theo Brand (N2 → Brand → SKU)"
+    ],
+    horizontal=True,
+    key="dashboard_view_mode"
+)
+
+st.markdown("---")
 
 # ==============================================================================
-# TAB 1: PHÂN TÍCH PHÂN CẤP NHÓM 2 (CHA) -> NHÓM 1 (CON)
+# CHẾ ĐỘ 1: PHÂN TÍCH THEO NHÓM HÀNG (N2 -> N1 -> SKU) - GIỮ NGUYÊN GỐC
 # ==============================================================================
-with tab_grp:
-    st.subheader("🗂️ Cơ Cấu & Xu Hướng Bán Hàng: Nhóm 2 (Cha) → Nhóm 1 (Con)")
+if view_mode == "🗂️ Phân tích theo Nhóm Hàng (N2 → N1 → SKU)":
+    tab_grp, tab_n1_sku, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🗂️ Phân tích nhóm hàng (N2 → N1)",
+        "📦 Phân tích nhóm hàng (N1 → SKU)",
+        "📅 Xu hướng theo Ngày",
+        "📈 Biến động từng SKU",
+        "🏆 Top Sản Phẩm",
+        "⚠️ Cảnh báo Lỗ & Giá vốn",
+        "📋 Sổ Chi Tiết"
+    ])
 
-    c_grp1, c_grp2 = st.columns([1.2, 1.5])
-    with c_grp1:
-        grp_metric_lbl = st.radio(
-            "Chọn chỉ số phân tích nhóm hàng:",
-            ["Doanh thu", "Lợi nhuận", "Số lượng"],
-            horizontal=True,
-            key="grp_metric"
-        )
-    with c_grp2:
-        hide_old_unassigned = st.checkbox(
-            "Ẩn dữ liệu '(Chưa phân Nhóm)' từ các file cũ để xem rõ Nhóm 2 → Nhóm 1",
-            value=True,
-            key="hide_old_n2"
-        )
+    # TAB 1: N2 -> N1
+    with tab_grp:
+        st.subheader("🗂️ Cơ Cấu & Xu Hướng Bán Hàng: Nhóm 2 (Cha) → Nhóm 1 (Con)")
 
-    grp_col_map = {"Doanh thu": "Doanh_thu", "Lợi nhuận": "Loi_nhuan", "Số lượng": "So_luong"}
-    grp_col = grp_col_map[grp_metric_lbl]
+        c_grp1, c_grp2 = st.columns([1.2, 1.5])
+        with c_grp1:
+            grp_metric_lbl = st.radio(
+                "Chọn chỉ số phân tích nhóm hàng:",
+                ["Doanh thu", "Lợi nhuận", "Số lượng"],
+                horizontal=True,
+                key="grp_metric"
+            )
+        with c_grp2:
+            hide_old_unassigned = st.checkbox(
+                "Ẩn dữ liệu '(Chưa phân Nhóm)' từ các file cũ để xem rõ Nhóm 2 → Nhóm 1",
+                value=True,
+                key="hide_old_n2"
+            )
 
-    df_grp_src = df_filtered.copy()
-    if hide_old_unassigned:
-        df_grp_src = df_grp_src[
-            (~df_grp_src["Nhóm2"].str.contains("Chưa phân", na=False)) &
-            (~df_grp_src["Nhóm1"].str.contains("Chưa phân", na=False))
-        ]
+        grp_col_map = {"Doanh thu": "Doanh_thu", "Lợi nhuận": "Loi_nhuan", "Số lượng": "So_luong"}
+        grp_col = grp_col_map[grp_metric_lbl]
 
-    if df_grp_src.empty:
-        st.warning("⚠️ Các file đang chọn chưa có dữ liệu Nhóm 1 / Nhóm 2. Hãy chọn file mới hoặc bỏ tích ô 'Ẩn dữ liệu Chưa phân Nhóm'.")
-    else:
-        grp_rev_total = df_grp_src["Doanh thu"].sum()
+        df_grp_src = df_filtered.copy()
+        if hide_old_unassigned:
+            df_grp_src = df_grp_src[
+                (~df_grp_src["Nhóm2"].str.contains("Chưa phân", na=False)) &
+                (~df_grp_src["Nhóm1"].str.contains("Chưa phân", na=False))
+            ]
 
-        df_nhom2_sum = df_grp_src.groupby("Nhóm2", as_index=False).agg(
-            So_SKU=("Mã hàng hóa", "nunique"),
-            So_luong=("Số lượng", "sum"),
-            Doanh_thu=("Doanh thu", "sum"),
-            Gia_von=("Giá xuất kho", "sum"),
-            Loi_nhuan=("Lợi nhuận", "sum")
-        ).sort_values(grp_col, ascending=False)
-        df_nhom2_sum["Tỷ trọng DT (%)"] = (df_nhom2_sum["Doanh_thu"] / grp_rev_total * 100) if grp_rev_total > 0 else 0
-        df_nhom2_sum["Biên LN (%)"] = (df_nhom2_sum["Loi_nhuan"] / df_nhom2_sum["Doanh_thu"] * 100).where(df_nhom2_sum["Doanh_thu"] > 0, 0)
+        if df_grp_src.empty:
+            st.warning("⚠️ Các file đang chọn chưa có dữ liệu Nhóm 1 / Nhóm 2. Hãy chọn file mới hoặc bỏ tích ô 'Ẩn dữ liệu Chưa phân Nhóm'.")
+        else:
+            grp_rev_total = df_grp_src["Doanh thu"].sum()
 
-        df_hierarchy = df_grp_src.groupby(["Nhóm2", "Nhóm1"], as_index=False).agg(
-            So_SKU=("Mã hàng hóa", "nunique"),
-            So_luong=("Số lượng", "sum"),
-            Doanh_thu=("Doanh thu", "sum"),
-            Gia_von=("Giá xuất kho", "sum"),
-            Loi_nhuan=("Lợi nhuận", "sum")
-        ).sort_values(["Nhóm2", grp_col], ascending=[True, False])
-        df_hierarchy["Tỷ trọng DT (%)"] = (df_hierarchy["Doanh_thu"] / grp_rev_total * 100) if grp_rev_total > 0 else 0
-        df_hierarchy["Biên LN (%)"] = (df_hierarchy["Loi_nhuan"] / df_hierarchy["Doanh_thu"] * 100).where(df_hierarchy["Doanh_thu"] > 0, 0)
+            df_nhom2_sum = df_grp_src.groupby("Nhóm2", as_index=False).agg(
+                So_SKU=("Mã hàng hóa", "nunique"),
+                So_luong=("Số lượng", "sum"),
+                Doanh_thu=("Doanh thu", "sum"),
+                Gia_von=("Giá xuất kho", "sum"),
+                Loi_nhuan=("Lợi nhuận", "sum")
+            ).sort_values(grp_col, ascending=False)
+            df_nhom2_sum["Tỷ trọng DT (%)"] = (df_nhom2_sum["Doanh_thu"] / grp_rev_total * 100) if grp_rev_total > 0 else 0
+            df_nhom2_sum["Biên LN (%)"] = (df_nhom2_sum["Loi_nhuan"] / df_nhom2_sum["Doanh_thu"] * 100).where(df_nhom2_sum["Doanh_thu"] > 0, 0)
 
-        g_col1, g_col2 = st.columns([1.1, 1.2])
-        with g_col1:
-            df_sun = df_hierarchy[df_hierarchy[grp_col] > 0].copy()
-            if not df_sun.empty:
-                fig_sun = px.sunburst(
-                    df_sun,
-                    path=["Nhóm2", "Nhóm1"],
-                    values=grp_col,
+            df_hierarchy = df_grp_src.groupby(["Nhóm2", "Nhóm1"], as_index=False).agg(
+                So_SKU=("Mã hàng hóa", "nunique"),
+                So_luong=("Số lượng", "sum"),
+                Doanh_thu=("Doanh thu", "sum"),
+                Gia_von=("Giá xuất kho", "sum"),
+                Loi_nhuan=("Lợi nhuận", "sum")
+            ).sort_values(["Nhóm2", grp_col], ascending=[True, False])
+            df_hierarchy["Tỷ trọng DT (%)"] = (df_hierarchy["Doanh_thu"] / grp_rev_total * 100) if grp_rev_total > 0 else 0
+            df_hierarchy["Biên LN (%)"] = (df_hierarchy["Loi_nhuan"] / df_hierarchy["Doanh_thu"] * 100).where(df_hierarchy["Doanh_thu"] > 0, 0)
+
+            g_col1, g_col2 = st.columns([1.1, 1.2])
+            with g_col1:
+                df_sun = df_hierarchy[df_hierarchy[grp_col] > 0].copy()
+                if not df_sun.empty:
+                    fig_sun = px.sunburst(
+                        df_sun,
+                        path=["Nhóm2", "Nhóm1"],
+                        values=grp_col,
+                        color="Nhóm2",
+                        color_discrete_map=GLOBAL_COLOR_MAP,
+                        title=f"Cơ Cấu Tỷ Trọng {grp_metric_lbl}: Nhóm 2 (Vòng trong) → Nhóm 1 (Vòng ngoài)"
+                    )
+                    fig_sun.update_traces(textinfo="label+percent parent")
+                    fig_sun.update_layout(height=470, margin=dict(t=50, l=10, r=10, b=10))
+                    st.plotly_chart(fig_sun, use_container_width=True)
+                else:
+                    st.info("Không có giá trị dương để vẽ biểu đồ tỷ trọng.")
+
+            with g_col2:
+                df_n1_rank = df_hierarchy.sort_values(grp_col, ascending=True).tail(15)
+                fig_n1 = px.bar(
+                    df_n1_rank,
+                    x=grp_col,
+                    y="Nhóm1",
                     color="Nhóm2",
                     color_discrete_map=GLOBAL_COLOR_MAP,
-                    title=f"Cơ Cấu Tỷ Trọng {grp_metric_lbl}: Nhóm 2 (Vòng trong) → Nhóm 1 (Vòng ngoài)"
+                    orientation="h",
+                    text=grp_col,
+                    title=f"Top 15 Nhóm 1 (Con) Cao Nhất Theo {grp_metric_lbl}",
+                    hover_data=["Nhóm2", "So_SKU", "So_luong", "Doanh_thu", "Loi_nhuan"]
                 )
-                fig_sun.update_traces(textinfo="label+percent parent")
-                fig_sun.update_layout(height=470, margin=dict(t=50, l=10, r=10, b=10))
-                st.plotly_chart(fig_sun, use_container_width=True)
-            else:
-                st.info("Không có giá trị dương để vẽ biểu đồ tỷ trọng.")
+                txt_fmt = "%{text:,.2f}" if grp_col == "So_luong" else "%{text:,.0f}"
+                fig_n1.update_traces(texttemplate=txt_fmt, textposition="outside")
+                fig_n1.update_layout(height=470, yaxis_title="Nhóm 1 (Con)", xaxis_title=grp_metric_lbl, legend_title="Nhóm 2 (Cha)")
+                st.plotly_chart(fig_n1, use_container_width=True)
 
-        with g_col2:
-            df_n1_rank = df_hierarchy.sort_values(grp_col, ascending=True).tail(15)
-            fig_n1 = px.bar(
-                df_n1_rank,
-                x=grp_col,
-                y="Nhóm1",
-                color="Nhóm2",
-                color_discrete_map=GLOBAL_COLOR_MAP,
-                orientation="h",
-                text=grp_col,
-                title=f"Top 15 Nhóm 1 (Con) Cao Nhất Theo {grp_metric_lbl}",
-                hover_data=["Nhóm2", "So_SKU", "So_luong", "Doanh_thu", "Loi_nhuan"]
+            st.markdown("---")
+            st.markdown(f"#### 📈 Xu Hướng Tăng/Giảm Theo Ngày Của Cấp Cha (Nhóm 2) & Cấp Con (Nhóm 1) — Theo {grp_metric_lbl}")
+
+            df_grp_src["N1_Unique"] = df_grp_src["Nhóm1"] + " (" + df_grp_src["Nhóm2"].str[:1] + ")"
+            n1_line_rank = (
+                df_grp_src.groupby("N1_Unique")[grp_metric_lbl]
+                .sum()
+                .sort_values(ascending=False)
+                .index.tolist()
             )
-            txt_fmt = "%{text:,.2f}" if grp_col == "So_luong" else "%{text:,.0f}"
-            fig_n1.update_traces(texttemplate=txt_fmt, textposition="outside")
-            fig_n1.update_layout(height=470, yaxis_title="Nhóm 1 (Con)", xaxis_title=grp_metric_lbl, legend_title="Nhóm 2 (Cha)")
-            st.plotly_chart(fig_n1, use_container_width=True)
-
-        st.markdown("---")
-        st.markdown(f"#### 📈 Xu Hướng Tăng/Giảm Theo Ngày Của Cấp Cha (Nhóm 2) & Cấp Con (Nhóm 1) — Theo {grp_metric_lbl}")
-
-        df_grp_src["N1_Unique"] = df_grp_src["Nhóm1"] + " (" + df_grp_src["Nhóm2"].str[:1] + ")"
-        n1_line_rank = (
-            df_grp_src.groupby("N1_Unique")[grp_metric_lbl]
-            .sum()
-            .sort_values(ascending=False)
-            .index.tolist()
-        )
-        picked_n1_lines = st.multiselect(
-            "Chọn các Nhóm 1 (Con) hiển thị trên đồ thị đường bên phải (mặc định Top 8 Nhóm 1 cao nhất):",
-            options=n1_line_rank,
-            default=n1_line_rank[:8],
-            key="picked_n1_lines"
-        )
-
-        line_col1, line_col2 = st.columns(2)
-        with line_col1:
-            n2_list = sorted(df_grp_src["Nhóm2"].unique().tolist())
-            df_n2_line = build_complete_daily_series(df_grp_src, MASTER_DAYS_DF, "Nhóm2", n2_list, grp_metric_lbl)
-            fig_line_n2 = build_line_chart_with_sum(
-                df_n2_line,
-                x_col="Ngày hiển thị",
-                y_col=grp_metric_lbl,
-                group_col="Nhóm2",
-                ordered_items=n2_list,
-                master_ordered_days=MASTER_ORDERED_DAYS,
-                title=f"1. Đồ Thị Đường Cấp Cha (Nhóm 2) — {grp_metric_lbl}",
-                legend_title="Nhóm 2 (Cha)",
-                color_map=GLOBAL_COLOR_MAP,
-                line_width=2.8,
-                marker_size=7
-            )
-            st.plotly_chart(fig_line_n2, use_container_width=True)
-
-        with line_col2:
-            active_n1_lines = picked_n1_lines if picked_n1_lines else n1_line_rank[:8]
-            df_n1_line = build_complete_daily_series(df_grp_src, MASTER_DAYS_DF, "N1_Unique", active_n1_lines, grp_metric_lbl)
-            fig_line_n1 = build_line_chart_with_sum(
-                df_n1_line,
-                x_col="Ngày hiển thị",
-                y_col=grp_metric_lbl,
-                group_col="N1_Unique",
-                ordered_items=active_n1_lines,
-                master_ordered_days=MASTER_ORDERED_DAYS,
-                title=f"2. Đồ Thị Đường Cấp Con (Nhóm 1) — {grp_metric_lbl}",
-                legend_title="Nhóm 1 (Con)",
-                color_map=GLOBAL_COLOR_MAP,
-                line_width=2.5,
-                marker_size=7
-            )
-            st.plotly_chart(fig_line_n1, use_container_width=True)
-
-        st.markdown("---")
-        b_col1, b_col2 = st.columns([1, 1.3])
-        with b_col1:
-            st.markdown("#### 📌 Tổng hợp theo Nhóm 2 (Ngành hàng cha)")
-            st.dataframe(
-                df_nhom2_sum.style.format({
-                    "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
-                    "Gia_von": "{:,.0f}", "Loi_nhuan": "{:,.0f}",
-                    "Tỷ trọng DT (%)": "{:.1f}%", "Biên LN (%)": "{:.1f}%"
-                }),
-                use_container_width=True,
-                height=320
-            )
-        with b_col2:
-            st.markdown("#### 📋 Chi tiết phân cấp Nhóm 2 → Nhóm 1 (Nhóm con)")
-            st.dataframe(
-                df_hierarchy.style.format({
-                    "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
-                    "Gia_von": "{:,.0f}", "Loi_nhuan": "{:,.0f}",
-                    "Tỷ trọng DT (%)": "{:.1f}%", "Biên LN (%)": "{:.1f}%"
-                }),
-                use_container_width=True,
-                height=320
+            picked_n1_lines = st.multiselect(
+                "Chọn các Nhóm 1 (Con) hiển thị trên đồ thị đường bên phải (mặc định Top 8 Nhóm 1 cao nhất):",
+                options=n1_line_rank,
+                default=n1_line_rank[:8],
+                key="picked_n1_lines"
             )
 
-# ==============================================================================
-# TAB 2: PHÂN TÍCH PHÂN CẤP NHÓM 1 (CHA) -> SKU (CHI TIẾT)
-# ==============================================================================
-with tab_n1_sku:
-    st.subheader("📦 Cơ Cấu & Xu Hướng Bán Hàng: Nhóm 1 (Cha) → SKU (Chi tiết)")
+            line_col1, line_col2 = st.columns(2)
+            with line_col1:
+                n2_list = sorted(df_grp_src["Nhóm2"].unique().tolist())
+                df_n2_line = build_complete_daily_series(df_grp_src, MASTER_DAYS_DF, "Nhóm2", n2_list, grp_metric_lbl)
+                fig_line_n2 = build_line_chart_with_sum(
+                    df_n2_line,
+                    x_col="Ngày hiển thị",
+                    y_col=grp_metric_lbl,
+                    group_col="Nhóm2",
+                    ordered_items=n2_list,
+                    master_ordered_days=MASTER_ORDERED_DAYS,
+                    title=f"1. Đồ Thị Đường Cấp Cha (Nhóm 2) — {grp_metric_lbl}",
+                    legend_title="Nhóm 2 (Cha)",
+                    color_map=GLOBAL_COLOR_MAP,
+                    line_width=2.8,
+                    marker_size=7
+                )
+                st.plotly_chart(fig_line_n2, use_container_width=True)
 
-    c_n1s_1, c_n1s_2, c_n1s_3 = st.columns([1.1, 1.3, 1.5])
-    with c_n1s_1:
-        n1s_metric_lbl = st.radio(
-            "Chọn chỉ số phân tích N1 → SKU:",
-            ["Doanh thu", "Lợi nhuận", "Số lượng"],
-            horizontal=True,
-            key="n1s_metric"
-        )
-    with c_n1s_2:
-        hide_old_n1s = st.checkbox(
-            "Ẩn dữ liệu '(Chưa phân Nhóm)' từ file cũ",
-            value=True,
-            key="hide_old_n1s"
-        )
-    with c_n1s_3:
-        max_sku_per_n1 = st.slider(
-            "Số SKU tối đa mỗi Nhóm 1 trên vòng tròn:",
-            min_value=5, max_value=30, value=12, step=1
-        )
+            with line_col2:
+                active_n1_lines = picked_n1_lines if picked_n1_lines else n1_line_rank[:8]
+                df_n1_line = build_complete_daily_series(df_grp_src, MASTER_DAYS_DF, "N1_Unique", active_n1_lines, grp_metric_lbl)
+                fig_line_n1 = build_line_chart_with_sum(
+                    df_n1_line,
+                    x_col="Ngày hiển thị",
+                    y_col=grp_metric_lbl,
+                    group_col="N1_Unique",
+                    ordered_items=active_n1_lines,
+                    master_ordered_days=MASTER_ORDERED_DAYS,
+                    title=f"2. Đồ Thị Đường Cấp Con (Nhóm 1) — {grp_metric_lbl}",
+                    legend_title="Nhóm 1 (Con)",
+                    color_map=GLOBAL_COLOR_MAP,
+                    line_width=2.5,
+                    marker_size=7
+                )
+                st.plotly_chart(fig_line_n1, use_container_width=True)
 
-    n1s_col_map = {"Doanh thu": "Doanh_thu", "Lợi nhuận": "Loi_nhuan", "Số lượng": "So_luong"}
-    n1s_col = n1s_col_map[n1s_metric_lbl]
+            st.markdown("---")
+            b_col1, b_col2 = st.columns([1, 1.3])
+            with b_col1:
+                st.markdown("#### 📌 Tổng hợp theo Nhóm 2 (Ngành hàng cha)")
+                st.dataframe(
+                    df_nhom2_sum.style.format({
+                        "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
+                        "Gia_von": "{:,.0f}", "Loi_nhuan": "{:,.0f}",
+                        "Tỷ trọng DT (%)": "{:.1f}%", "Biên LN (%)": "{:.1f}%"
+                    }),
+                    use_container_width=True,
+                    height=320
+                )
+            with b_col2:
+                st.markdown("#### 📋 Chi tiết phân cấp Nhóm 2 → Nhóm 1 (Nhóm con)")
+                st.dataframe(
+                    df_hierarchy.style.format({
+                        "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
+                        "Gia_von": "{:,.0f}", "Loi_nhuan": "{:,.0f}",
+                        "Tỷ trọng DT (%)": "{:.1f}%", "Biên LN (%)": "{:.1f}%"
+                    }),
+                    use_container_width=True,
+                    height=320
+                )
 
-    df_n1s_src = df_filtered.copy()
-    if hide_old_n1s:
-        df_n1s_src = df_n1s_src[~df_n1s_src["Nhóm1"].str.contains("Chưa phân", na=False)]
+    # TAB 2: N1 -> SKU
+    with tab_n1_sku:
+        st.subheader("📦 Cơ Cấu & Xu Hướng Bán Hàng: Nhóm 1 (Cha) → SKU (Chi tiết)")
 
-    if df_n1s_src.empty:
-        st.warning("⚠️ Các file đang chọn chưa có dữ liệu Nhóm 1. Hãy chọn file mới hoặc bỏ tích ô 'Ẩn dữ liệu Chưa phân Nhóm'.")
-    else:
-        n1_ranked_list = (
-            df_n1s_src.groupby("Nhóm1")[n1s_metric_lbl]
-            .sum()
-            .sort_values(ascending=False)
-            .index.tolist()
-        )
-        picked_n1_groups = st.multiselect(
-            "🎯 Chọn các Nhóm 1 (Cha) muốn phân tích sâu xuống từng SKU (mặc định Top 8 Nhóm 1 lớn nhất):",
-            options=n1_ranked_list,
-            default=n1_ranked_list[:8],
-            key="picked_n1_for_sku"
-        )
-
-        df_n1s_active = df_n1s_src[df_n1s_src["Nhóm1"].isin(picked_n1_groups)] if picked_n1_groups else df_n1s_src
-        n1s_rev_total = df_n1s_active["Doanh thu"].sum()
-
-        df_n1_summary = df_n1s_active.groupby("Nhóm1", as_index=False).agg(
-            So_SKU=("Mã hàng hóa", "nunique"),
-            So_luong=("Số lượng", "sum"),
-            Doanh_thu=("Doanh thu", "sum"),
-            Gia_von=("Giá xuất kho", "sum"),
-            Loi_nhuan=("Lợi nhuận", "sum")
-        ).sort_values(n1s_col, ascending=False)
-        df_n1_summary["Tỷ trọng DT (%)"] = (df_n1_summary["Doanh_thu"] / n1s_rev_total * 100) if n1s_rev_total > 0 else 0
-        df_n1_summary["Biên LN (%)"] = (df_n1_summary["Loi_nhuan"] / df_n1_summary["Doanh_thu"] * 100).where(df_n1_summary["Doanh_thu"] > 0, 0)
-
-        df_n1_sku_hier = df_n1s_active.groupby(["Nhóm1", "Mã hàng hóa", "Tên hàng hóa", "SKU_Label", "Đơn vị tính"], as_index=False).agg(
-            So_don=("Mã đơn hàng eShop", "nunique"),
-            So_luong=("Số lượng", "sum"),
-            Doanh_thu=("Doanh thu", "sum"),
-            Gia_von=("Giá xuất kho", "sum"),
-            Loi_nhuan=("Lợi nhuận", "sum")
-        ).sort_values(["Nhóm1", n1s_col], ascending=[True, False])
-        df_n1_sku_hier["Tỷ trọng DT (%)"] = (df_n1_sku_hier["Doanh_thu"] / n1s_rev_total * 100) if n1s_rev_total > 0 else 0
-        df_n1_sku_hier["Biên LN (%)"] = (df_n1_sku_hier["Loi_nhuan"] / df_n1_sku_hier["Doanh_thu"] * 100).where(df_n1_sku_hier["Doanh_thu"] > 0, 0)
-
-        ns_col1, ns_col2 = st.columns([1.1, 1.2])
-        with ns_col1:
-            df_sun_n1s = (
-                df_n1_sku_hier[df_n1_sku_hier[n1s_col] > 0]
-                .groupby("Nhóm1", group_keys=False)
-                .head(max_sku_per_n1)
-                .copy()
+        c_n1s_1, c_n1s_2, c_n1s_3 = st.columns([1.1, 1.3, 1.5])
+        with c_n1s_1:
+            n1s_metric_lbl = st.radio(
+                "Chọn chỉ số phân tích N1 → SKU:",
+                ["Doanh thu", "Lợi nhuận", "Số lượng"],
+                horizontal=True,
+                key="n1s_metric"
             )
-            df_sun_n1s["SKU_Short"] = df_sun_n1s["Tên hàng hóa"].apply(lambda x: x[:26] + "..." if len(x) > 26 else x)
+        with c_n1s_2:
+            hide_old_n1s = st.checkbox(
+                "Ẩn dữ liệu '(Chưa phân Nhóm)' từ file cũ",
+                value=True,
+                key="hide_old_n1s"
+            )
+        with c_n1s_3:
+            max_sku_per_n1 = st.slider(
+                "Số SKU tối đa mỗi Nhóm 1 trên vòng tròn:",
+                min_value=5, max_value=30, value=12, step=1,
+                key="max_sku_n1"
+            )
 
-            if not df_sun_n1s.empty:
-                fig_sun_n1s = px.sunburst(
-                    df_sun_n1s,
-                    path=["Nhóm1", "SKU_Short"],
-                    values=n1s_col,
+        n1s_col_map = {"Doanh thu": "Doanh_thu", "Lợi nhuận": "Loi_nhuan", "Số lượng": "So_luong"}
+        n1s_col = n1s_col_map[n1s_metric_lbl]
+
+        df_n1s_src = df_filtered.copy()
+        if hide_old_n1s:
+            df_n1s_src = df_n1s_src[~df_n1s_src["Nhóm1"].str.contains("Chưa phân", na=False)]
+
+        if df_n1s_src.empty:
+            st.warning("⚠️ Các file đang chọn chưa có dữ liệu Nhóm 1. Hãy chọn file mới hoặc bỏ tích ô 'Ẩn dữ liệu Chưa phân Nhóm'.")
+        else:
+            n1_ranked_list = (
+                df_n1s_src.groupby("Nhóm1")[n1s_metric_lbl]
+                .sum()
+                .sort_values(ascending=False)
+                .index.tolist()
+            )
+            picked_n1_groups = st.multiselect(
+                "🎯 Chọn các Nhóm 1 (Cha) muốn phân tích sâu xuống từng SKU (mặc định Top 8 Nhóm 1 lớn nhất):",
+                options=n1_ranked_list,
+                default=n1_ranked_list[:8],
+                key="picked_n1_for_sku"
+            )
+
+            df_n1s_active = df_n1s_src[df_n1s_src["Nhóm1"].isin(picked_n1_groups)] if picked_n1_groups else df_n1s_src
+            n1s_rev_total = df_n1s_active["Doanh thu"].sum()
+
+            df_n1_summary = df_n1s_active.groupby("Nhóm1", as_index=False).agg(
+                So_SKU=("Mã hàng hóa", "nunique"),
+                So_luong=("Số lượng", "sum"),
+                Doanh_thu=("Doanh thu", "sum"),
+                Gia_von=("Giá xuất kho", "sum"),
+                Loi_nhuan=("Lợi nhuận", "sum")
+            ).sort_values(n1s_col, ascending=False)
+            df_n1_summary["Tỷ trọng DT (%)"] = (df_n1_summary["Doanh_thu"] / n1s_rev_total * 100) if n1s_rev_total > 0 else 0
+            df_n1_summary["Biên LN (%)"] = (df_n1_summary["Loi_nhuan"] / df_n1_summary["Doanh_thu"] * 100).where(df_n1_summary["Doanh_thu"] > 0, 0)
+
+            df_n1_sku_hier = df_n1s_active.groupby(["Nhóm1", "Mã hàng hóa", "Tên hàng hóa", "SKU_Label", "Đơn vị tính"], as_index=False).agg(
+                So_don=("Mã đơn hàng eShop", "nunique"),
+                So_luong=("Số lượng", "sum"),
+                Doanh_thu=("Doanh thu", "sum"),
+                Gia_von=("Giá xuất kho", "sum"),
+                Loi_nhuan=("Lợi nhuận", "sum")
+            ).sort_values(["Nhóm1", n1s_col], ascending=[True, False])
+            df_n1_sku_hier["Tỷ trọng DT (%)"] = (df_n1_sku_hier["Doanh_thu"] / n1s_rev_total * 100) if n1s_rev_total > 0 else 0
+            df_n1_sku_hier["Biên LN (%)"] = (df_n1_sku_hier["Loi_nhuan"] / df_n1_sku_hier["Doanh_thu"] * 100).where(df_n1_sku_hier["Doanh_thu"] > 0, 0)
+
+            ns_col1, ns_col2 = st.columns([1.1, 1.2])
+            with ns_col1:
+                df_sun_n1s = (
+                    df_n1_sku_hier[df_n1_sku_hier[n1s_col] > 0]
+                    .groupby("Nhóm1", group_keys=False)
+                    .head(max_sku_per_n1)
+                    .copy()
+                )
+                df_sun_n1s["SKU_Short"] = df_sun_n1s["Tên hàng hóa"].apply(lambda x: x[:26] + "..." if len(x) > 26 else x)
+
+                if not df_sun_n1s.empty:
+                    fig_sun_n1s = px.sunburst(
+                        df_sun_n1s,
+                        path=["Nhóm1", "SKU_Short"],
+                        values=n1s_col,
+                        color="Nhóm1",
+                        color_discrete_map=GLOBAL_COLOR_MAP,
+                        title=f"Cơ Cấu Tỷ Trọng {n1s_metric_lbl}: Nhóm 1 (Vòng trong) → SKU (Vòng ngoài)",
+                        hover_data=["Mã hàng hóa", "Tên hàng hóa", "So_luong", "Doanh_thu", "Loi_nhuan"]
+                    )
+                    fig_sun_n1s.update_traces(textinfo="label+percent parent")
+                    fig_sun_n1s.update_layout(height=470, margin=dict(t=50, l=10, r=10, b=10))
+                    st.plotly_chart(fig_sun_n1s, use_container_width=True)
+                else:
+                    st.info("Không có giá trị dương để vẽ biểu đồ tỷ trọng.")
+
+            with ns_col2:
+                df_sku_rank_n1 = df_n1_sku_hier.sort_values(n1s_col, ascending=True).tail(15)
+                fig_sku_n1_bar = px.bar(
+                    df_sku_rank_n1,
+                    x=n1s_col,
+                    y="Tên hàng hóa",
                     color="Nhóm1",
                     color_discrete_map=GLOBAL_COLOR_MAP,
-                    title=f"Cơ Cấu Tỷ Trọng {n1s_metric_lbl}: Nhóm 1 (Vòng trong) → SKU (Vòng ngoài)",
-                    hover_data=["Mã hàng hóa", "Tên hàng hóa", "So_luong", "Doanh_thu", "Loi_nhuan"]
+                    orientation="h",
+                    text=n1s_col,
+                    title=f"Top 15 SKU Cao Nhất Theo {n1s_metric_lbl} (Tô màu theo Nhóm 1)",
+                    hover_data=["Nhóm1", "Mã hàng hóa", "So_luong", "Doanh_thu", "Loi_nhuan"]
                 )
-                fig_sun_n1s.update_traces(textinfo="label+percent parent")
-                fig_sun_n1s.update_layout(height=470, margin=dict(t=50, l=10, r=10, b=10))
-                st.plotly_chart(fig_sun_n1s, use_container_width=True)
-            else:
-                st.info("Không có giá trị dương để vẽ biểu đồ tỷ trọng.")
+                txt_fmt_n1s = "%{text:,.2f}" if n1s_col == "So_luong" else "%{text:,.0f}"
+                fig_sku_n1_bar.update_traces(texttemplate=txt_fmt_n1s, textposition="outside")
+                fig_sku_n1_bar.update_layout(height=470, yaxis_title="Sản phẩm (SKU)", xaxis_title=n1s_metric_lbl, legend_title="Nhóm 1")
+                st.plotly_chart(fig_sku_n1_bar, use_container_width=True)
 
-        with ns_col2:
-            df_sku_rank_n1 = df_n1_sku_hier.sort_values(n1s_col, ascending=True).tail(15)
-            fig_sku_n1_bar = px.bar(
-                df_sku_rank_n1,
-                x=n1s_col,
-                y="Tên hàng hóa",
-                color="Nhóm1",
-                color_discrete_map=GLOBAL_COLOR_MAP,
-                orientation="h",
-                text=n1s_col,
-                title=f"Top 15 SKU Cao Nhất Theo {n1s_metric_lbl} (Tô màu theo Nhóm 1)",
-                hover_data=["Nhóm1", "Mã hàng hóa", "So_luong", "Doanh_thu", "Loi_nhuan"]
+            st.markdown("---")
+            st.markdown(f"#### 📈 Xu Hướng Tăng/Giảm Theo Ngày Của Cấp Cha (Nhóm 1) & Chi Tiết (SKU) — Theo {n1s_metric_lbl}")
+
+            sku_line_rank = (
+                df_n1s_active.groupby("SKU_Label")[n1s_metric_lbl]
+                .sum()
+                .sort_values(ascending=False)
+                .index.tolist()
             )
-            txt_fmt_n1s = "%{text:,.2f}" if n1s_col == "So_luong" else "%{text:,.0f}"
-            fig_sku_n1_bar.update_traces(texttemplate=txt_fmt_n1s, textposition="outside")
-            fig_sku_n1_bar.update_layout(height=470, yaxis_title="Sản phẩm (SKU)", xaxis_title=n1s_metric_lbl, legend_title="Nhóm 1")
-            st.plotly_chart(fig_sku_n1_bar, use_container_width=True)
-
-        st.markdown("---")
-        st.markdown(f"#### 📈 Xu Hướng Tăng/Giảm Theo Ngày Của Cấp Cha (Nhóm 1) & Chi Tiết (SKU) — Theo {n1s_metric_lbl}")
-
-        sku_line_rank = (
-            df_n1s_active.groupby("SKU_Label")[n1s_metric_lbl]
-            .sum()
-            .sort_values(ascending=False)
-            .index.tolist()
-        )
-        picked_sku_lines = st.multiselect(
-            "Chọn các SKU chi tiết hiển thị trên đồ thị đường bên phải (mặc định Top 8 SKU cao nhất):",
-            options=sku_line_rank,
-            default=sku_line_rank[:8],
-            key="picked_sku_lines_n1s"
-        )
-
-        ns_line1, ns_line2 = st.columns(2)
-        with ns_line1:
-            active_n1_cha = df_n1_summary["Nhóm1"].tolist()
-            df_n1_cha_line = build_complete_daily_series(df_n1s_active, MASTER_DAYS_DF, "Nhóm1", active_n1_cha, n1s_metric_lbl)
-            fig_line_n1_cha = build_line_chart_with_sum(
-                df_n1_cha_line,
-                x_col="Ngày hiển thị",
-                y_col=n1s_metric_lbl,
-                group_col="Nhóm1",
-                ordered_items=active_n1_cha,
-                master_ordered_days=MASTER_ORDERED_DAYS,
-                title=f"1. Đồ Thị Đường Cấp Cha (Nhóm 1) — {n1s_metric_lbl}",
-                legend_title="Nhóm 1 (Cha)",
-                color_map=GLOBAL_COLOR_MAP,
-                line_width=2.8,
-                marker_size=7
+            picked_sku_lines = st.multiselect(
+                "Chọn các SKU chi tiết hiển thị trên đồ thị đường bên phải (mặc định Top 8 SKU cao nhất):",
+                options=sku_line_rank,
+                default=sku_line_rank[:8],
+                key="picked_sku_lines_n1s"
             )
-            st.plotly_chart(fig_line_n1_cha, use_container_width=True)
 
-        with ns_line2:
-            active_sku_con = picked_sku_lines if picked_sku_lines else sku_line_rank[:8]
-            df_sku_con_line = build_complete_daily_series(df_n1s_active, MASTER_DAYS_DF, "SKU_Label", active_sku_con, n1s_metric_lbl)
-            fig_line_sku_con = build_line_chart_with_sum(
-                df_sku_con_line,
-                x_col="Ngày hiển thị",
-                y_col=n1s_metric_lbl,
-                group_col="SKU_Label",
-                ordered_items=active_sku_con,
-                master_ordered_days=MASTER_ORDERED_DAYS,
-                title=f"2. Đồ Thị Đường Chi Tiết (SKU) — {n1s_metric_lbl}",
-                legend_title="Sản phẩm (SKU)",
-                color_map=GLOBAL_COLOR_MAP,
-                line_width=2.5,
-                marker_size=7
-            )
-            st.plotly_chart(fig_line_sku_con, use_container_width=True)
+            ns_line1, ns_line2 = st.columns(2)
+            with ns_line1:
+                active_n1_cha = df_n1_summary["Nhóm1"].tolist()
+                df_n1_cha_line = build_complete_daily_series(df_n1s_active, MASTER_DAYS_DF, "Nhóm1", active_n1_cha, n1s_metric_lbl)
+                fig_line_n1_cha = build_line_chart_with_sum(
+                    df_n1_cha_line,
+                    x_col="Ngày hiển thị",
+                    y_col=n1s_metric_lbl,
+                    group_col="Nhóm1",
+                    ordered_items=active_n1_cha,
+                    master_ordered_days=MASTER_ORDERED_DAYS,
+                    title=f"1. Đồ Thị Đường Cấp Cha (Nhóm 1) — {n1s_metric_lbl}",
+                    legend_title="Nhóm 1 (Cha)",
+                    color_map=GLOBAL_COLOR_MAP,
+                    line_width=2.8,
+                    marker_size=7
+                )
+                st.plotly_chart(fig_line_n1_cha, use_container_width=True)
 
-        st.markdown("---")
-        nb_col1, nb_col2 = st.columns([1, 1.4])
-        with nb_col1:
-            st.markdown("#### 📌 Tổng hợp theo Nhóm 1")
-            st.dataframe(
-                df_n1_summary.style.format({
-                    "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
-                    "Gia_von": "{:,.0f}", "Loi_nhuan": "{:,.0f}",
-                    "Tỷ trọng DT (%)": "{:.1f}%", "Biên LN (%)": "{:.1f}%"
-                }),
-                use_container_width=True,
-                height=340
-            )
-        with nb_col2:
-            st.markdown("#### 📋 Chi tiết phân cấp Nhóm 1 → SKU")
-            cols_n1_sku_tbl = ["Nhóm1", "Mã hàng hóa", "Tên hàng hóa", "Đơn vị tính", "So_luong", "Doanh_thu", "Loi_nhuan", "Tỷ trọng DT (%)", "Biên LN (%)"]
-            st.dataframe(
-                df_n1_sku_hier[cols_n1_sku_tbl].style.format({
-                    "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
-                    "Loi_nhuan": "{:,.0f}", "Tỷ trọng DT (%)": "{:.1f}%",
-                    "Biên LN (%)": "{:.1f}%"
-                }),
-                use_container_width=True,
-                height=340
-            )
+            with ns_line2:
+                active_sku_con = picked_sku_lines if picked_sku_lines else sku_line_rank[:8]
+                df_sku_con_line = build_complete_daily_series(df_n1s_active, MASTER_DAYS_DF, "SKU_Label", active_sku_con, n1s_metric_lbl)
+                fig_line_sku_con = build_line_chart_with_sum(
+                    df_sku_con_line,
+                    x_col="Ngày hiển thị",
+                    y_col=n1s_metric_lbl,
+                    group_col="SKU_Label",
+                    ordered_items=active_sku_con,
+                    master_ordered_days=MASTER_ORDERED_DAYS,
+                    title=f"2. Đồ Thị Đường Chi Tiết (SKU) — {n1s_metric_lbl}",
+                    legend_title="Sản phẩm (SKU)",
+                    color_map=GLOBAL_COLOR_MAP,
+                    line_width=2.5,
+                    marker_size=7
+                )
+                st.plotly_chart(fig_line_sku_con, use_container_width=True)
+
+            st.markdown("---")
+            nb_col1, nb_col2 = st.columns([1, 1.4])
+            with nb_col1:
+                st.markdown("#### 📌 Tổng hợp theo Nhóm 1")
+                st.dataframe(
+                    df_n1_summary.style.format({
+                        "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
+                        "Gia_von": "{:,.0f}", "Loi_nhuan": "{:,.0f}",
+                        "Tỷ trọng DT (%)": "{:.1f}%", "Biên LN (%)": "{:.1f}%"
+                    }),
+                    use_container_width=True,
+                    height=340
+                )
+            with nb_col2:
+                st.markdown("#### 📋 Chi tiết phân cấp Nhóm 1 → SKU")
+                cols_n1_sku_tbl = ["Nhóm1", "Mã hàng hóa", "Tên hàng hóa", "Đơn vị tính", "So_luong", "Doanh_thu", "Loi_nhuan", "Tỷ trọng DT (%)", "Biên LN (%)"]
+                st.dataframe(
+                    df_n1_sku_hier[cols_n1_sku_tbl].style.format({
+                        "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
+                        "Loi_nhuan": "{:,.0f}", "Tỷ trọng DT (%)": "{:.1f}%",
+                        "Biên LN (%)": "{:.1f}%"
+                    }),
+                    use_container_width=True,
+                    height=340
+                )
 
 # ==============================================================================
-# TAB 3: XU HƯỚNG THEO NGÀY
+# CHẾ ĐỘ 2: PHÂN TÍCH THEO BRAND (N2 -> BRAND -> SKU) - GIAO DIỆN Y CHANG
+# ==============================================================================
+else:
+    tab_grp_br, tab_br_sku, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🏷️ Phân tích Brand (N2 → Brand)",
+        "📦 Phân tích Brand (Brand → SKU)",
+        "📅 Xu hướng theo Ngày",
+        "📈 Biến động từng SKU",
+        "🏆 Top Sản Phẩm",
+        "⚠️ Cảnh báo Lỗ & Giá vốn",
+        "📋 Sổ Chi Tiết"
+    ])
+
+    # TAB 1 (BRAND): PHÂN TÍCH PHÂN CẤP NHÓM 2 (CHA) -> BRAND (CON)
+    with tab_grp_br:
+        st.subheader("🏷️ Cơ Cấu & Xu Hướng Bán Hàng: Nhóm 2 (Cha) → Brand (Con)")
+
+        c_br1, c_br2 = st.columns([1.2, 1.5])
+        with c_br1:
+            br_metric_lbl = st.radio(
+                "Chọn chỉ số phân tích Brand:",
+                ["Doanh thu", "Lợi nhuận", "Số lượng"],
+                horizontal=True,
+                key="br_metric"
+            )
+        with c_br2:
+            hide_old_br = st.checkbox(
+                "Ẩn dữ liệu '(Chưa phân Nhóm / Brand)' từ các file cũ để xem rõ Nhóm 2 → Brand",
+                value=True,
+                key="hide_old_br"
+            )
+
+        br_col_map = {"Doanh thu": "Doanh_thu", "Lợi nhuận": "Loi_nhuan", "Số lượng": "So_luong"}
+        br_col = br_col_map[br_metric_lbl]
+
+        df_br_src = df_filtered.copy()
+        if hide_old_br:
+            df_br_src = df_br_src[
+                (~df_br_src["Nhóm2"].str.contains("Chưa phân", na=False)) &
+                (~df_br_src["Brand"].str.contains("Chưa phân", na=False))
+            ]
+
+        if df_br_src.empty:
+            st.warning("⚠️ Các file đang chọn chưa có dữ liệu Nhóm 2 / Brand. Hãy chọn file mới hoặc bỏ tích ô 'Ẩn dữ liệu Chưa phân Nhóm / Brand'.")
+        else:
+            br_rev_total = df_br_src["Doanh thu"].sum()
+
+            df_nhom2_br_sum = df_br_src.groupby("Nhóm2", as_index=False).agg(
+                So_Brand=("Brand", "nunique"),
+                So_SKU=("Mã hàng hóa", "nunique"),
+                So_luong=("Số lượng", "sum"),
+                Doanh_thu=("Doanh thu", "sum"),
+                Gia_von=("Giá xuất kho", "sum"),
+                Loi_nhuan=("Lợi nhuận", "sum")
+            ).sort_values(br_col, ascending=False)
+            df_nhom2_br_sum["Tỷ trọng DT (%)"] = (df_nhom2_br_sum["Doanh_thu"] / br_rev_total * 100) if br_rev_total > 0 else 0
+            df_nhom2_br_sum["Biên LN (%)"] = (df_nhom2_br_sum["Loi_nhuan"] / df_nhom2_br_sum["Doanh_thu"] * 100).where(df_nhom2_br_sum["Doanh_thu"] > 0, 0)
+
+            df_br_hierarchy = df_br_src.groupby(["Nhóm2", "Brand"], as_index=False).agg(
+                So_SKU=("Mã hàng hóa", "nunique"),
+                So_luong=("Số lượng", "sum"),
+                Doanh_thu=("Doanh thu", "sum"),
+                Gia_von=("Giá xuất kho", "sum"),
+                Loi_nhuan=("Lợi nhuận", "sum")
+            ).sort_values(["Nhóm2", br_col], ascending=[True, False])
+            df_br_hierarchy["Tỷ trọng DT (%)"] = (df_br_hierarchy["Doanh_thu"] / br_rev_total * 100) if br_rev_total > 0 else 0
+            df_br_hierarchy["Biên LN (%)"] = (df_br_hierarchy["Loi_nhuan"] / df_br_hierarchy["Doanh_thu"] * 100).where(df_br_hierarchy["Doanh_thu"] > 0, 0)
+
+            g_col1, g_col2 = st.columns([1.1, 1.2])
+            with g_col1:
+                # Giới hạn Top 15 Brand mỗi Nhóm 2 trên Sunburst để biểu đồ sắc nét không bị rối
+                df_sun_br = (
+                    df_br_hierarchy[df_br_hierarchy[br_col] > 0]
+                    .groupby("Nhóm2", group_keys=False)
+                    .head(15)
+                    .copy()
+                )
+                if not df_sun_br.empty:
+                    fig_sun_br = px.sunburst(
+                        df_sun_br,
+                        path=["Nhóm2", "Brand"],
+                        values=br_col,
+                        color="Nhóm2",
+                        color_discrete_map=GLOBAL_COLOR_MAP,
+                        title=f"Cơ Cấu Tỷ Trọng {br_metric_lbl}: Nhóm 2 (Vòng trong) → Brand (Vòng ngoài)"
+                    )
+                    fig_sun_br.update_traces(textinfo="label+percent parent")
+                    fig_sun_br.update_layout(height=470, margin=dict(t=50, l=10, r=10, b=10))
+                    st.plotly_chart(fig_sun_br, use_container_width=True)
+                else:
+                    st.info("Không có giá trị dương để vẽ biểu đồ tỷ trọng.")
+
+            with g_col2:
+                df_br_rank = df_br_hierarchy.sort_values(br_col, ascending=True).tail(15)
+                fig_br_bar = px.bar(
+                    df_br_rank,
+                    x=br_col,
+                    y="Brand",
+                    color="Nhóm2",
+                    color_discrete_map=GLOBAL_COLOR_MAP,
+                    orientation="h",
+                    text=br_col,
+                    title=f"Top 15 Brand (Con) Cao Nhất Theo {br_metric_lbl}",
+                    hover_data=["Nhóm2", "So_SKU", "So_luong", "Doanh_thu", "Loi_nhuan"]
+                )
+                txt_fmt_br = "%{text:,.2f}" if br_col == "So_luong" else "%{text:,.0f}"
+                fig_br_bar.update_traces(texttemplate=txt_fmt_br, textposition="outside")
+                fig_br_bar.update_layout(height=470, yaxis_title="Brand (Con)", xaxis_title=br_metric_lbl, legend_title="Nhóm 2 (Cha)")
+                st.plotly_chart(fig_br_bar, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown(f"#### 📈 Xu Hướng Tăng/Giảm Theo Ngày Của Cấp Cha (Nhóm 2) & Cấp Con (Brand) — Theo {br_metric_lbl}")
+
+            br_line_rank = (
+                df_br_src.groupby("Brand")[br_metric_lbl]
+                .sum()
+                .sort_values(ascending=False)
+                .index.tolist()
+            )
+            picked_br_lines = st.multiselect(
+                "Chọn các Brand (Con) hiển thị trên đồ thị đường bên phải (mặc định Top 8 Brand cao nhất):",
+                options=br_line_rank,
+                default=br_line_rank[:8],
+                key="picked_br_lines"
+            )
+
+            line_col1, line_col2 = st.columns(2)
+            with line_col1:
+                n2_list_br = sorted(df_br_src["Nhóm2"].unique().tolist())
+                df_n2_br_line = build_complete_daily_series(df_br_src, MASTER_DAYS_DF, "Nhóm2", n2_list_br, br_metric_lbl)
+                fig_line_n2_br = build_line_chart_with_sum(
+                    df_n2_br_line,
+                    x_col="Ngày hiển thị",
+                    y_col=br_metric_lbl,
+                    group_col="Nhóm2",
+                    ordered_items=n2_list_br,
+                    master_ordered_days=MASTER_ORDERED_DAYS,
+                    title=f"1. Đồ Thị Đường Cấp Cha (Nhóm 2) — {br_metric_lbl}",
+                    legend_title="Nhóm 2 (Cha)",
+                    color_map=GLOBAL_COLOR_MAP,
+                    line_width=2.8,
+                    marker_size=7
+                )
+                st.plotly_chart(fig_line_n2_br, use_container_width=True)
+
+            with line_col2:
+                active_br_lines = picked_br_lines if picked_br_lines else br_line_rank[:8]
+                df_br_line = build_complete_daily_series(df_br_src, MASTER_DAYS_DF, "Brand", active_br_lines, br_metric_lbl)
+                fig_line_br = build_line_chart_with_sum(
+                    df_br_line,
+                    x_col="Ngày hiển thị",
+                    y_col=br_metric_lbl,
+                    group_col="Brand",
+                    ordered_items=active_br_lines,
+                    master_ordered_days=MASTER_ORDERED_DAYS,
+                    title=f"2. Đồ Thị Đường Cấp Con (Brand) — {br_metric_lbl}",
+                    legend_title="Brand (Con)",
+                    color_map=GLOBAL_COLOR_MAP,
+                    line_width=2.5,
+                    marker_size=7
+                )
+                st.plotly_chart(fig_line_br, use_container_width=True)
+
+            st.markdown("---")
+            b_col1, b_col2 = st.columns([1, 1.3])
+            with b_col1:
+                st.markdown("#### 📌 Tổng hợp theo Nhóm 2 (Ngành hàng cha)")
+                st.dataframe(
+                    df_nhom2_br_sum.style.format({
+                        "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
+                        "Gia_von": "{:,.0f}", "Loi_nhuan": "{:,.0f}",
+                        "Tỷ trọng DT (%)": "{:.1f}%", "Biên LN (%)": "{:.1f}%"
+                    }),
+                    use_container_width=True,
+                    height=320
+                )
+            with b_col2:
+                st.markdown("#### 📋 Chi tiết phân cấp Nhóm 2 → Brand (Thương hiệu con)")
+                st.dataframe(
+                    df_br_hierarchy.style.format({
+                        "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
+                        "Gia_von": "{:,.0f}", "Loi_nhuan": "{:,.0f}",
+                        "Tỷ trọng DT (%)": "{:.1f}%", "Biên LN (%)": "{:.1f}%"
+                    }),
+                    use_container_width=True,
+                    height=320
+                )
+
+    # TAB 2 (BRAND): PHÂN TÍCH PHÂN CẤP BRAND (CHA) -> SKU (CHI TIẾT)
+    with tab_br_sku:
+        st.subheader("📦 Cơ Cấu & Xu Hướng Bán Hàng: Brand (Cha) → SKU (Chi tiết)")
+
+        c_brs_1, c_brs_2, c_brs_3 = st.columns([1.1, 1.3, 1.5])
+        with c_brs_1:
+            brs_metric_lbl = st.radio(
+                "Chọn chỉ số phân tích Brand → SKU:",
+                ["Doanh thu", "Lợi nhuận", "Số lượng"],
+                horizontal=True,
+                key="brs_metric"
+            )
+        with c_brs_2:
+            hide_old_brs = st.checkbox(
+                "Ẩn dữ liệu '(Chưa phân Brand)' từ file cũ",
+                value=True,
+                key="hide_old_brs"
+            )
+        with c_brs_3:
+            max_sku_per_br = st.slider(
+                "Số SKU tối đa mỗi Brand trên vòng tròn:",
+                min_value=5, max_value=30, value=12, step=1,
+                key="max_sku_br"
+            )
+
+        brs_col_map = {"Doanh thu": "Doanh_thu", "Lợi nhuận": "Loi_nhuan", "Số lượng": "So_luong"}
+        brs_col = brs_col_map[brs_metric_lbl]
+
+        df_brs_src = df_filtered.copy()
+        if hide_old_brs:
+            df_brs_src = df_brs_src[~df_brs_src["Brand"].str.contains("Chưa phân", na=False)]
+
+        if df_brs_src.empty:
+            st.warning("⚠️ Các file đang chọn chưa có dữ liệu Brand. Hãy chọn file mới hoặc bỏ tích ô 'Ẩn dữ liệu Chưa phân Brand'.")
+        else:
+            br_ranked_list = (
+                df_brs_src.groupby("Brand")[brs_metric_lbl]
+                .sum()
+                .sort_values(ascending=False)
+                .index.tolist()
+            )
+            picked_br_groups = st.multiselect(
+                "🎯 Chọn các Brand (Cha) muốn phân tích sâu xuống từng SKU (mặc định Top 8 Brand lớn nhất):",
+                options=br_ranked_list,
+                default=br_ranked_list[:8],
+                key="picked_br_for_sku"
+            )
+
+            df_brs_active = df_brs_src[df_brs_src["Brand"].isin(picked_br_groups)] if picked_br_groups else df_brs_src
+            brs_rev_total = df_brs_active["Doanh thu"].sum()
+
+            df_br_summary = df_brs_active.groupby("Brand", as_index=False).agg(
+                So_SKU=("Mã hàng hóa", "nunique"),
+                So_luong=("Số lượng", "sum"),
+                Doanh_thu=("Doanh thu", "sum"),
+                Gia_von=("Giá xuất kho", "sum"),
+                Loi_nhuan=("Lợi nhuận", "sum")
+            ).sort_values(brs_col, ascending=False)
+            df_br_summary["Tỷ trọng DT (%)"] = (df_br_summary["Doanh_thu"] / brs_rev_total * 100) if brs_rev_total > 0 else 0
+            df_br_summary["Biên LN (%)"] = (df_br_summary["Loi_nhuan"] / df_br_summary["Doanh_thu"] * 100).where(df_br_summary["Doanh_thu"] > 0, 0)
+
+            df_br_sku_hier = df_brs_active.groupby(["Brand", "Mã hàng hóa", "Tên hàng hóa", "SKU_Label", "Đơn vị tính"], as_index=False).agg(
+                So_don=("Mã đơn hàng eShop", "nunique"),
+                So_luong=("Số lượng", "sum"),
+                Doanh_thu=("Doanh thu", "sum"),
+                Gia_von=("Giá xuất kho", "sum"),
+                Loi_nhuan=("Lợi nhuận", "sum")
+            ).sort_values(["Brand", brs_col], ascending=[True, False])
+            df_br_sku_hier["Tỷ trọng DT (%)"] = (df_br_sku_hier["Doanh_thu"] / brs_rev_total * 100) if brs_rev_total > 0 else 0
+            df_br_sku_hier["Biên LN (%)"] = (df_br_sku_hier["Loi_nhuan"] / df_br_sku_hier["Doanh_thu"] * 100).where(df_br_sku_hier["Doanh_thu"] > 0, 0)
+
+            ns_col1, ns_col2 = st.columns([1.1, 1.2])
+            with ns_col1:
+                df_sun_brs = (
+                    df_br_sku_hier[df_br_sku_hier[brs_col] > 0]
+                    .groupby("Brand", group_keys=False)
+                    .head(max_sku_per_br)
+                    .copy()
+                )
+                df_sun_brs["SKU_Short"] = df_sun_brs["Tên hàng hóa"].apply(lambda x: x[:26] + "..." if len(x) > 26 else x)
+
+                if not df_sun_brs.empty:
+                    fig_sun_brs = px.sunburst(
+                        df_sun_brs,
+                        path=["Brand", "SKU_Short"],
+                        values=brs_col,
+                        color="Brand",
+                        color_discrete_map=GLOBAL_COLOR_MAP,
+                        title=f"Cơ Cấu Tỷ Trọng {brs_metric_lbl}: Brand (Vòng trong) → SKU (Vòng ngoài)",
+                        hover_data=["Mã hàng hóa", "Tên hàng hóa", "So_luong", "Doanh_thu", "Loi_nhuan"]
+                    )
+                    fig_sun_brs.update_traces(textinfo="label+percent parent")
+                    fig_sun_brs.update_layout(height=470, margin=dict(t=50, l=10, r=10, b=10))
+                    st.plotly_chart(fig_sun_brs, use_container_width=True)
+                else:
+                    st.info("Không có giá trị dương để vẽ biểu đồ tỷ trọng.")
+
+            with ns_col2:
+                df_sku_rank_br = df_br_sku_hier.sort_values(brs_col, ascending=True).tail(15)
+                fig_sku_br_bar = px.bar(
+                    df_sku_rank_br,
+                    x=brs_col,
+                    y="Tên hàng hóa",
+                    color="Brand",
+                    color_discrete_map=GLOBAL_COLOR_MAP,
+                    orientation="h",
+                    text=brs_col,
+                    title=f"Top 15 SKU Cao Nhất Theo {brs_metric_lbl} (Tô màu theo Brand)",
+                    hover_data=["Brand", "Mã hàng hóa", "So_luong", "Doanh_thu", "Loi_nhuan"]
+                )
+                txt_fmt_brs = "%{text:,.2f}" if brs_col == "So_luong" else "%{text:,.0f}"
+                fig_sku_br_bar.update_traces(texttemplate=txt_fmt_brs, textposition="outside")
+                fig_sku_br_bar.update_layout(height=470, yaxis_title="Sản phẩm (SKU)", xaxis_title=brs_metric_lbl, legend_title="Brand")
+                st.plotly_chart(fig_sku_br_bar, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown(f"#### 📈 Xu Hướng Tăng/Giảm Theo Ngày Của Cấp Cha (Brand) & Chi Tiết (SKU) — Theo {brs_metric_lbl}")
+
+            sku_line_rank_br = (
+                df_brs_active.groupby("SKU_Label")[brs_metric_lbl]
+                .sum()
+                .sort_values(ascending=False)
+                .index.tolist()
+            )
+            picked_sku_lines_br = st.multiselect(
+                "Chọn các SKU chi tiết hiển thị trên đồ thị đường bên phải (mặc định Top 8 SKU cao nhất):",
+                options=sku_line_rank_br,
+                default=sku_line_rank_br[:8],
+                key="picked_sku_lines_brs"
+            )
+
+            ns_line1, ns_line2 = st.columns(2)
+            with ns_line1:
+                active_br_cha = df_br_summary["Brand"].tolist()
+                df_br_cha_line = build_complete_daily_series(df_brs_active, MASTER_DAYS_DF, "Brand", active_br_cha, brs_metric_lbl)
+                fig_line_br_cha = build_line_chart_with_sum(
+                    df_br_cha_line,
+                    x_col="Ngày hiển thị",
+                    y_col=brs_metric_lbl,
+                    group_col="Brand",
+                    ordered_items=active_br_cha,
+                    master_ordered_days=MASTER_ORDERED_DAYS,
+                    title=f"1. Đồ Thị Đường Cấp Cha (Brand) — {brs_metric_lbl}",
+                    legend_title="Brand (Cha)",
+                    color_map=GLOBAL_COLOR_MAP,
+                    line_width=2.8,
+                    marker_size=7
+                )
+                st.plotly_chart(fig_line_br_cha, use_container_width=True)
+
+            with ns_line2:
+                active_sku_con_br = picked_sku_lines_br if picked_sku_lines_br else sku_line_rank_br[:8]
+                df_sku_con_br_line = build_complete_daily_series(df_brs_active, MASTER_DAYS_DF, "SKU_Label", active_sku_con_br, brs_metric_lbl)
+                fig_line_sku_con_br = build_line_chart_with_sum(
+                    df_sku_con_br_line,
+                    x_col="Ngày hiển thị",
+                    y_col=brs_metric_lbl,
+                    group_col="SKU_Label",
+                    ordered_items=active_sku_con_br,
+                    master_ordered_days=MASTER_ORDERED_DAYS,
+                    title=f"2. Đồ Thị Đường Chi Tiết (SKU) — {brs_metric_lbl}",
+                    legend_title="Sản phẩm (SKU)",
+                    color_map=GLOBAL_COLOR_MAP,
+                    line_width=2.5,
+                    marker_size=7
+                )
+                st.plotly_chart(fig_line_sku_con_br, use_container_width=True)
+
+            st.markdown("---")
+            nb_col1, nb_col2 = st.columns([1, 1.4])
+            with nb_col1:
+                st.markdown("#### 📌 Tổng hợp theo Brand")
+                st.dataframe(
+                    df_br_summary.style.format({
+                        "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
+                        "Gia_von": "{:,.0f}", "Loi_nhuan": "{:,.0f}",
+                        "Tỷ trọng DT (%)": "{:.1f}%", "Biên LN (%)": "{:.1f}%"
+                    }),
+                    use_container_width=True,
+                    height=340
+                )
+            with nb_col2:
+                st.markdown("#### 📋 Chi tiết phân cấp Brand → SKU")
+                cols_br_sku_tbl = ["Brand", "Mã hàng hóa", "Tên hàng hóa", "Đơn vị tính", "So_luong", "Doanh_thu", "Loi_nhuan", "Tỷ trọng DT (%)", "Biên LN (%)"]
+                st.dataframe(
+                    df_br_sku_hier[cols_br_sku_tbl].style.format({
+                        "So_luong": "{:,.2f}", "Doanh_thu": "{:,.0f}",
+                        "Loi_nhuan": "{:,.0f}", "Tỷ trọng DT (%)": "{:.1f}%",
+                        "Biên LN (%)": "{:.1f}%"
+                    }),
+                    use_container_width=True,
+                    height=340
+                )
+
+# ==============================================================================
+# CÁC TAB DÙNG CHUNG (TAB 3 -> TAB 7): XU HƯỚNG NGÀY, SKU, TOP, CẢNH BÁO, SỔ CHI TIẾT
 # ==============================================================================
 with tab1:
     st.subheader("📅 Diễn biến Doanh thu & Lợi nhuận theo ngày")
@@ -711,9 +1128,6 @@ with tab1:
         use_container_width=True
     )
 
-# ==============================================================================
-# TAB 4: BIẾN ĐỘNG TỪNG SKU THEO NGÀY
-# ==============================================================================
 with tab2:
     st.subheader("📈 Biến Động Doanh Số / Lợi Nhuận / Số Lượng Của Từng Mặt Hàng (SKU)")
     c_sku1, c_sku2 = st.columns([2, 1])
@@ -757,9 +1171,6 @@ with tab2:
     else:
         st.info("Vui lòng chọn ít nhất 1 mặt hàng ở ô phía trên để xem biểu đồ biến động.")
 
-# ==============================================================================
-# TAB 5: TOP SẢN PHẨM
-# ==============================================================================
 with tab3:
     col_a, col_b = st.columns(2)
     with col_a:
@@ -768,7 +1179,7 @@ with tab3:
             top_rev_df, x="Doanh_thu", y="Tên hàng hóa", color="Nhóm2",
             color_discrete_map=GLOBAL_COLOR_MAP, orientation="h",
             title=f"Top {top_n} Doanh Thu Cao Nhất", text="Doanh_thu",
-            hover_data=["Nhóm1", "Mã hàng hóa", "So_luong", "Loi_nhuan"]
+            hover_data=["Nhóm1", "Brand", "Mã hàng hóa", "So_luong", "Loi_nhuan"]
         )
         fig_rev.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
         fig_rev.update_layout(height=480, yaxis_title="")
@@ -780,7 +1191,7 @@ with tab3:
             top_prof_df, x="Loi_nhuan", y="Tên hàng hóa", color="Nhóm2",
             color_discrete_map=GLOBAL_COLOR_MAP, orientation="h",
             title=f"Top {top_n} Lợi Nhuận Gộp Cao Nhất", text="Loi_nhuan",
-            hover_data=["Nhóm1", "Mã hàng hóa", "So_luong", "Doanh_thu"]
+            hover_data=["Nhóm1", "Brand", "Mã hàng hóa", "So_luong", "Doanh_thu"]
         )
         fig_prof.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
         fig_prof.update_layout(height=480, yaxis_title="")
@@ -797,9 +1208,6 @@ with tab3:
         use_container_width=True
     )
 
-# ==============================================================================
-# TAB 6: CẢNH BÁO LỖ & GIÁ VỐN
-# ==============================================================================
 with tab4:
     c_warn1, c_warn2 = st.columns(2)
     with c_warn1:
@@ -807,7 +1215,7 @@ with tab4:
         if df_loss.empty:
             st.success("Không có giao dịch nào bị âm lợi nhuận!")
         else:
-            cols_w = ["Ngày hiển thị", "Nhóm2", "Nhóm1", "Mã đơn hàng eShop", "Mã hàng hóa", "Tên hàng hóa", "Số lượng", "Doanh thu", "Giá xuất kho", "Lợi nhuận"]
+            cols_w = ["Ngày hiển thị", "Nhóm2", "Nhóm1", "Brand", "Mã đơn hàng eShop", "Mã hàng hóa", "Tên hàng hóa", "Số lượng", "Doanh thu", "Giá xuất kho", "Lợi nhuận"]
             st.dataframe(
                 df_loss[cols_w].style.format({"Số lượng": "{:,.2f}", "Doanh thu": "{:,.0f}", "Giá xuất kho": "{:,.0f}", "Lợi nhuận": "{:,.0f}"}),
                 use_container_width=True
@@ -818,19 +1226,16 @@ with tab4:
         if df_zero_cost.empty:
             st.success("Tất cả mặt hàng có doanh thu đều đã cập nhật giá vốn!")
         else:
-            cols_z = ["Ngày hiển thị", "Nhóm2", "Nhóm1", "Mã đơn hàng eShop", "Mã hàng hóa", "Tên hàng hóa", "Số lượng", "Doanh thu"]
+            cols_z = ["Ngày hiển thị", "Nhóm2", "Nhóm1", "Brand", "Mã đơn hàng eShop", "Mã hàng hóa", "Tên hàng hóa", "Số lượng", "Doanh thu"]
             st.dataframe(
                 df_zero_cost[cols_z].style.format({"Số lượng": "{:,.2f}", "Doanh thu": "{:,.0f}"}),
                 use_container_width=True
             )
 
-# ==============================================================================
-# TAB 7: SỔ CHI TIẾT & XUẤT FILE EXCEL / POWERPOINT
-# ==============================================================================
 with tab5:
     st.subheader("📋 Dữ liệu chi tiết sau lọc & Xuất báo cáo")
     display_cols = [
-        "Ngày hiển thị", "Nhóm2", "Nhóm1", "Mã đơn hàng eShop", "Số hóa đơn",
+        "Ngày hiển thị", "Nhóm2", "Nhóm1", "Brand", "Mã đơn hàng eShop", "Số hóa đơn",
         "Mã hàng hóa", "Tên hàng hóa", "Đơn vị tính", "Số lượng",
         "Đơn giá trước thuế", "Doanh thu", "Thuế GTGT", "Giá xuất kho", "Lợi nhuận", "Nguồn file"
     ]
@@ -864,6 +1269,18 @@ with tab5:
             })
             df_kpi.to_excel(writer, sheet_name="Tong_Quan_KPI", index=False)
             df_daily_show.to_excel(writer, sheet_name="Xu_Huong_Ngay", index=False)
+
+            # Thêm sheet Tổng hợp theo Brand vào file Excel xuất ra
+            df_brand_export = df_filtered.groupby(["Nhóm2", "Brand"], as_index=False).agg(
+                So_SKU=("Mã hàng hóa", "nunique"),
+                So_luong=("Số lượng", "sum"),
+                Doanh_thu=("Doanh thu", "sum"),
+                Gia_von=("Giá xuất kho", "sum"),
+                Loi_nhuan=("Lợi nhuận", "sum")
+            ).sort_values("Doanh_thu", ascending=False)
+            df_brand_export["Biên LN (%)"] = (df_brand_export["Loi_nhuan"] / df_brand_export["Doanh_thu"] * 100).where(df_brand_export["Doanh_thu"] > 0, 0)
+            df_brand_export.to_excel(writer, sheet_name="Tong_Hop_Brand", index=False)
+
             df_prod_show.to_excel(writer, sheet_name="Xep_Hang_SKU", index=False)
             df_filtered[display_cols].to_excel(writer, sheet_name="So_Chi_Tiet", index=False)
         return output.getvalue()
