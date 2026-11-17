@@ -793,17 +793,18 @@ else:
 
             g_col1, g_col2 = st.columns([1.1, 1.2])
             with g_col1:
-                # Giới hạn Top 15 Brand mỗi Nhóm 2 trên Sunburst để biểu đồ sắc nét không bị rối
-                df_sun_br = (
-                    df_br_hierarchy[df_br_hierarchy[br_col] > 0]
-                    .groupby("Nhóm2", group_keys=False)
-                    .head(15)
-                    .copy()
-                )
-                if not df_sun_br.empty:
+                # Gom các Brand ngoài Top 15 mỗi Nhóm 2 thành nhóm "Brand khác (...)" để giữ nguyên 100% tổng Nhóm 2
+                df_sun_raw = df_br_hierarchy[df_br_hierarchy[br_col] > 0].copy()
+                if not df_sun_raw.empty:
+                    df_sun_raw["_rank_in_n2"] = df_sun_raw.groupby("Nhóm2")[br_col].rank(ascending=False, method="first")
+                    df_sun_raw["Brand_Sun"] = df_sun_raw.apply(
+                        lambda r: r["Brand"] if r["_rank_in_n2"] <= 15 else "Các Brand khác (ngoài Top 15)",
+                        axis=1
+                    )
+                    df_sun_br = df_sun_raw.groupby(["Nhóm2", "Brand_Sun"], as_index=False)[br_col].sum()
                     fig_sun_br = px.sunburst(
                         df_sun_br,
-                        path=["Nhóm2", "Brand"],
+                        path=["Nhóm2", "Brand_Sun"],
                         values=br_col,
                         color="Nhóm2",
                         color_discrete_map=GLOBAL_COLOR_MAP,
