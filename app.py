@@ -25,7 +25,7 @@ except ImportError:
     HAS_PPTX = False
 
 # 1. Cấu hình trang
-st.set_page_config(page_title="Báo Cáo Bán Hàng ABL 2026 (v17)", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Báo Cáo Bán Hàng ABL 2026 (v18 - Đồng nhất màu)", page_icon="📊", layout="wide")
 st.title("📊 Dashboard Phân Tích Bán Hàng & Cơ Cấu Nhóm Hàng - ABL")
 
 # 2. Khóa mật khẩu đăng nhập nội bộ
@@ -41,11 +41,46 @@ if not st.session_state.authenticated:
         st.error("❌ Sai mật khẩu truy cập!")
     st.stop()
 
-PALETTE_COLORS = [
+# Bảng màu mở rộng 24 màu phân biệt rõ nét
+MASTER_PALETTE = [
     "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
     "#8C564B", "#E377C2", "#17BECF", "#BCBD22", "#393B79",
-    "#E6550D", "#31A354", "#756BB1", "#636363", "#AD494A"
+    "#E6550D", "#31A354", "#756BB1", "#636363", "#AD494A",
+    "#008080", "#E7298A", "#66A61E", "#E6AB02", "#A6761D",
+    "#1B9E77", "#D95F02", "#7570B3", "#B2182B"
 ]
+
+def build_fixed_color_map(df_full):
+    """Tạo từ điển màu cố định cho tất cả Nhóm 2, Nhóm 1 và SKU từ dữ liệu gốc"""
+    color_map = {}
+
+    # 1. Cố định màu cho Nhóm 2
+    if "Nhóm2" in df_full.columns:
+        all_n2 = sorted(df_full["Nhóm2"].dropna().unique().tolist())
+        for idx, n2 in enumerate(all_n2):
+            color_map[n2] = MASTER_PALETTE[idx % len(MASTER_PALETTE)]
+
+    # 2. Cố định màu cho Nhóm 1
+    if "Nhóm1" in df_full.columns:
+        all_n1 = sorted(df_full["Nhóm1"].dropna().unique().tolist())
+        for idx, n1 in enumerate(all_n1):
+            c = MASTER_PALETTE[(idx + 5) % len(MASTER_PALETTE)]
+            color_map[n1] = c
+
+    # Map thêm cho N1_Unique (dùng ở Tab 1)
+    if "Nhóm2" in df_full.columns and "Nhóm1" in df_full.columns:
+        pairs = df_full[["Nhóm1", "Nhóm2"]].dropna().drop_duplicates()
+        for _, row in pairs.iterrows():
+            u_name = f"{row['Nhóm1']} ({str(row['Nhóm2'])[:1]})"
+            color_map[u_name] = color_map.get(row["Nhóm1"], "#1F77B4")
+
+    # 3. Cố định màu cho SKU (dùng hash MD5 để mỗi mã hàng luôn ra 1 màu duy nhất)
+    if "SKU_Label" in df_full.columns:
+        for sku in df_full["SKU_Label"].dropna().unique():
+            h = int(hashlib.md5(str(sku).encode("utf-8")).hexdigest(), 16)
+            color_map[sku] = MASTER_PALETTE[h % len(MASTER_PALETTE)]
+
+    return color_map
 
 def build_complete_daily_series(df_source, master_days_df, group_col, selected_items, value_col):
     if master_days_df.empty or not selected_items:
@@ -62,7 +97,7 @@ def build_complete_daily_series(df_source, master_days_df, group_col, selected_i
     )
     return complete
 
-def build_line_chart_with_sum(df_line, x_col, y_col, group_col, ordered_items, master_ordered_days, title, legend_title, line_width=2.5, marker_size=7):
+def build_line_chart_with_sum(df_line, x_col, y_col, group_col, ordered_items, master_ordered_days, title, legend_title, color_map=None, line_width=2.5, marker_size=7):
     val_fmt = ",.2f" if y_col == "Số lượng" else ",.0f"
     fig = go.Figure()
 
@@ -88,7 +123,10 @@ def build_line_chart_with_sum(df_line, x_col, y_col, group_col, ordered_items, m
         if sub.empty:
             continue
         item_total = sub[y_col].sum()
-        color = PALETTE_COLORS[idx % len(PALETTE_COLORS)]
+        if color_map and item in color_map:
+            color = color_map[item]
+        else:
+            color = MASTER_PALETTE[idx % len(MASTER_PALETTE)]
         short_name = item if len(str(item)) <= 32 else str(item)[:30] + "…"
         fig.add_trace(go.Scatter(
             x=sub[x_col],
@@ -125,6 +163,9 @@ df_all_sql = load_sql_data()
 if df_all_sql.empty:
     st.error("Bảng dữ liệu ban_hang_abl trên Supabase đang trống.")
     st.stop()
+
+# Khởi tạo từ điển màu cố định toàn cục cho toàn bộ báo cáo
+GLOBAL_COLOR_MAP = build_fixed_color_map(df_all_sql)
 
 # --- THANH BỘ LỌC BÊN TRÁI (SIDEBAR) ---
 st.sidebar.header("📂 Dữ liệu đầu vào")
@@ -337,7 +378,7 @@ with tab_grp:
                     path=["Nhóm2", "Nhóm1"],
                     values=grp_col,
                     color="Nhóm2",
-                    color_discrete_sequence=px.colors.qualitative.Bold,
+                    color_discrete_map=GLOBAL_COLOR_MAP,
                     title=f"Cơ Cấu Tỷ Trọng {grp_metric_lbl}: Nhóm 2 (Vòng trong) → Nhóm 1 (Vòng ngoài)"
                 )
                 fig_sun.update_traces(textinfo="label+percent parent")
@@ -353,7 +394,7 @@ with tab_grp:
                 x=grp_col,
                 y="Nhóm1",
                 color="Nhóm2",
-                color_discrete_sequence=px.colors.qualitative.Bold,
+                color_discrete_map=GLOBAL_COLOR_MAP,
                 orientation="h",
                 text=grp_col,
                 title=f"Top 15 Nhóm 1 (Con) Cao Nhất Theo {grp_metric_lbl}",
@@ -394,6 +435,7 @@ with tab_grp:
                 master_ordered_days=MASTER_ORDERED_DAYS,
                 title=f"1. Đồ Thị Đường Cấp Cha (Nhóm 2) — {grp_metric_lbl}",
                 legend_title="Nhóm 2 (Cha)",
+                color_map=GLOBAL_COLOR_MAP,
                 line_width=2.8,
                 marker_size=7
             )
@@ -411,6 +453,7 @@ with tab_grp:
                 master_ordered_days=MASTER_ORDERED_DAYS,
                 title=f"2. Đồ Thị Đường Cấp Con (Nhóm 1) — {grp_metric_lbl}",
                 legend_title="Nhóm 1 (Con)",
+                color_map=GLOBAL_COLOR_MAP,
                 line_width=2.5,
                 marker_size=7
             )
@@ -529,7 +572,7 @@ with tab_n1_sku:
                     path=["Nhóm1", "SKU_Short"],
                     values=n1s_col,
                     color="Nhóm1",
-                    color_discrete_sequence=px.colors.qualitative.Vivid,
+                    color_discrete_map=GLOBAL_COLOR_MAP,
                     title=f"Cơ Cấu Tỷ Trọng {n1s_metric_lbl}: Nhóm 1 (Vòng trong) → SKU (Vòng ngoài)",
                     hover_data=["Mã hàng hóa", "Tên hàng hóa", "So_luong", "Doanh_thu", "Loi_nhuan"]
                 )
@@ -546,7 +589,7 @@ with tab_n1_sku:
                 x=n1s_col,
                 y="Tên hàng hóa",
                 color="Nhóm1",
-                color_discrete_sequence=px.colors.qualitative.Vivid,
+                color_discrete_map=GLOBAL_COLOR_MAP,
                 orientation="h",
                 text=n1s_col,
                 title=f"Top 15 SKU Cao Nhất Theo {n1s_metric_lbl} (Tô màu theo Nhóm 1)",
@@ -586,6 +629,7 @@ with tab_n1_sku:
                 master_ordered_days=MASTER_ORDERED_DAYS,
                 title=f"1. Đồ Thị Đường Cấp Cha (Nhóm 1) — {n1s_metric_lbl}",
                 legend_title="Nhóm 1 (Cha)",
+                color_map=GLOBAL_COLOR_MAP,
                 line_width=2.8,
                 marker_size=7
             )
@@ -603,6 +647,7 @@ with tab_n1_sku:
                 master_ordered_days=MASTER_ORDERED_DAYS,
                 title=f"2. Đồ Thị Đường Chi Tiết (SKU) — {n1s_metric_lbl}",
                 legend_title="Sản phẩm (SKU)",
+                color_map=GLOBAL_COLOR_MAP,
                 line_width=2.5,
                 marker_size=7
             )
@@ -698,6 +743,7 @@ with tab2:
             master_ordered_days=MASTER_ORDERED_DAYS,
             title=f"So sánh biến động {metric_choice} từng mặt hàng theo ngày",
             legend_title="Mặt hàng (SKU)",
+            color_map=GLOBAL_COLOR_MAP,
             line_width=2.5,
             marker_size=7
         )
@@ -719,7 +765,8 @@ with tab3:
     with col_a:
         top_rev_df = df_prod.sort_values("Doanh_thu", ascending=True).tail(top_n)
         fig_rev = px.bar(
-            top_rev_df, x="Doanh_thu", y="Tên hàng hóa", color="Nhóm2", orientation="h",
+            top_rev_df, x="Doanh_thu", y="Tên hàng hóa", color="Nhóm2",
+            color_discrete_map=GLOBAL_COLOR_MAP, orientation="h",
             title=f"Top {top_n} Doanh Thu Cao Nhất", text="Doanh_thu",
             hover_data=["Nhóm1", "Mã hàng hóa", "So_luong", "Loi_nhuan"]
         )
@@ -730,7 +777,8 @@ with tab3:
     with col_b:
         top_prof_df = df_prod.sort_values("Loi_nhuan", ascending=True).tail(top_n)
         fig_prof = px.bar(
-            top_prof_df, x="Loi_nhuan", y="Tên hàng hóa", color="Nhóm2", orientation="h",
+            top_prof_df, x="Loi_nhuan", y="Tên hàng hóa", color="Nhóm2",
+            color_discrete_map=GLOBAL_COLOR_MAP, orientation="h",
             title=f"Top {top_n} Lợi Nhuận Gộp Cao Nhất", text="Loi_nhuan",
             hover_data=["Nhóm1", "Mã hàng hóa", "So_luong", "Doanh_thu"]
         )
