@@ -157,17 +157,26 @@ def build_line_chart_with_sum(df_line, x_col, y_col, group_col, ordered_items, m
     return fig
 
 # 3. Tải dữ liệu trực tiếp từ Supabase SQL
-@st.cache_data(ttl=600, show_spinner="🔄 Đang tải dữ liệu từ máy chủ...")
+@st.cache_data(ttl=300, show_spinner="🔄 Đang tải dữ liệu từ máy chủ...")
 def load_sql_data():
     engine = create_engine(st.secrets["DATABASE_URL"])
     df_sql = pd.read_sql("SELECT * FROM ban_hang_abl", engine)
     df_sql["Ngày_dt"] = pd.to_datetime(df_sql["Ngày_dt"], errors="coerce")
-    # Chuẩn hóa cột Brand (đảm bảo không bị lỗi nếu database cũ chưa có cột Brand hoặc có giá trị trống)
-    if "Brand" not in df_sql.columns:
+    
+    # Tự động tìm cột Brand bất kể viết hoa/thường (Brand, brand, BRAND)
+    brand_col_found = None
+    for c in df_sql.columns:
+        if c.strip().lower() == "brand":
+            brand_col_found = c
+            break
+            
+    if brand_col_found is None:
         df_sql["Brand"] = "(Chưa phân Brand)"
     else:
+        if brand_col_found != "Brand":
+            df_sql["Brand"] = df_sql[brand_col_found]
         df_sql["Brand"] = df_sql["Brand"].fillna("(Chưa phân Brand)").astype(str).str.strip()
-        df_sql.loc[df_sql["Brand"].isin(["", "nan", "None", "0"]), "Brand"] = "(Chưa phân Brand)"
+        df_sql.loc[df_sql["Brand"].isin(["", "nan", "None", "0", "NULL", "null"]), "Brand"] = "(Chưa phân Brand)"
     return df_sql
 
 df_all_sql = load_sql_data()
